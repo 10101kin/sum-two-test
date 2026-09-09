@@ -8,15 +8,23 @@ pr:
     include:
       - main
 
+parameters:
+  - name: containerRegistryServiceConnection
+    type: string
+    default: ''
+  - name: azureSubscriptionServiceConnection
+    type: string
+    default: ''
+  - name: deployEnabled
+    type: boolean
+    default: false
+
 variables:
   imageRepository: 'sum-two'
   dockerfilePath: 'Dockerfile'
-  containerRegistryServiceConnection: 'acr-service-connection'
-  azureSubscriptionServiceConnection: 'azure-rm-service-connection'
   acrLoginServer: 'yourregistry.azurecr.io'
   appPort: '8080'
   healthPath: '/'
-  deployEnabled: 'false'
   azureResourceGroup: 'rg-sum-two-demo'
   azureContainerGroupName: 'cg-sum-two'
   azureLocation: 'eastus'
@@ -82,60 +90,62 @@ stages:
             displayName: Cleanup container
             condition: always()
 
-  - stage: Publish
-    displayName: Publish Image
-    dependsOn: Verify
-    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
-    jobs:
-      - job: Publish
-        pool:
-          vmImage: 'ubuntu-latest'
-        steps:
-          - task: Docker@2
-            displayName: Build and push image to ACR
-            inputs:
-              containerRegistry: '$(containerRegistryServiceConnection)'
-              repository: '$(imageRepository)'
-              command: 'buildAndPush'
-              Dockerfile: '$(dockerfilePath)'
-              tags: |
-                $(imageTag)
-                $(Build.BuildId)
-                latest
+  - ${{ if ne(parameters.containerRegistryServiceConnection, '') }}:
+      - stage: Publish
+        displayName: Publish Image
+        dependsOn: Verify
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+        jobs:
+          - job: Publish
+            pool:
+              vmImage: 'ubuntu-latest'
+            steps:
+              - task: Docker@2
+                displayName: Build and push image to ACR
+                inputs:
+                  containerRegistry: ${{ parameters.containerRegistryServiceConnection }}
+                  repository: '$(imageRepository)'
+                  command: 'buildAndPush'
+                  Dockerfile: '$(dockerfilePath)'
+                  tags: |
+                    $(imageTag)
+                    $(Build.BuildId)
+                    latest
 
-  - stage: Deploy
-    displayName: Deploy to Azure Container Instances
-    dependsOn: Publish
-    condition: and(succeeded(), eq(variables['deployEnabled'], 'true'))
-    jobs:
-      - deployment: DeployACI
-        displayName: Deploy container image
-        environment: 'sum-two-prod'
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - task: AzureCLI@2
-                  displayName: Create or update ACI
-                  inputs:
-                    azureSubscription: '$(azureSubscriptionServiceConnection)'
-                    scriptType: 'bash'
-                    scriptLocation: 'inlineScript'
-                    inlineScript: |
-                      set -eux
-                      IMAGE="$(acrLoginServer)/$(imageRepository):$(imageTag)"
+  - ${{ if and(parameters.deployEnabled, ne(parameters.containerRegistryServiceConnection, ''), ne(parameters.azureSubscriptionServiceConnection, '')) }}:
+      - stage: Deploy
+        displayName: Deploy to Azure Container Instances
+        dependsOn: Publish
+        condition: succeeded()
+        jobs:
+          - deployment: DeployACI
+            displayName: Deploy container image
+            environment: 'sum-two-prod'
+            strategy:
+              runOnce:
+                deploy:
+                  steps:
+                    - task: AzureCLI@2
+                      displayName: Create or update ACI
+                      inputs:
+                        azureSubscription: ${{ parameters.azureSubscriptionServiceConnection }}
+                        scriptType: 'bash'
+                        scriptLocation: 'inlineScript'
+                        inlineScript: |
+                          set -eux
+                          IMAGE="$(acrLoginServer)/$(imageRepository):$(imageTag)"
 
-                      az container create \
-                        --resource-group "$(azureResourceGroup)" \
-                        --name "$(azureContainerGroupName)" \
-                        --image "$IMAGE" \
-                        --dns-name-label "$(azureContainerGroupName)" \
-                        --ports 80 \
-                        --cpu "$(containerCpu)" \
-                        --memory "$(containerMemory)" \
-                        --location "$(azureLocation)" \
-                        --restart-policy Always \
-                        --registry-login-server "$(acrLoginServer)" \
-                        --registry-username "$(ACR_USERNAME)" \
-                        --registry-password "$(ACR_PASSWORD)" \
-                        --query "provisioningState"
+                          az container create \
+                            --resource-group "$(azureResourceGroup)" \
+                            --name "$(azureContainerGroupName)" \
+                            --image "$IMAGE" \
+                            --dns-name-label "$(azureContainerGroupName)" \
+                            --ports 80 \
+                            --cpu "$(containerCpu)" \
+                            --memory "$(containerMemory)" \
+                            --location "$(azureLocation)" \
+                            --restart-policy Always \
+                            --registry-login-server "$(acrLoginServer)" \
+                            --registry-username "$(ACR_USERNAME)" \
+                            --registry-password "$(ACR_PASSWORD)" \
+                            --query "provisioningState"
